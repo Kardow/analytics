@@ -49,6 +49,11 @@ defmodule Plausible.Ingestion.Request do
     field :query_params, :map
 
     field :timestamp, :naive_datetime
+
+    # Cloudflare geo headers
+    field :cf_country, :string
+    field :cf_city, :string
+    field :cf_region, :string
   end
 
   @type t() :: %__MODULE__{}
@@ -71,6 +76,7 @@ defmodule Plausible.Ingestion.Request do
         changeset
         |> put_ip_classification(conn)
         |> put_remote_ip(conn)
+        |> put_cf_geo(conn)
         |> put_uri(request_body)
         |> put_hostname()
         |> put_user_agent(conn)
@@ -253,6 +259,28 @@ defmodule Plausible.Ingestion.Request do
       _any ->
         changeset
     end
+  end
+
+  defp put_cf_geo(changeset, %Plug.Conn{} = conn) do
+    cf_country =
+      conn
+      |> Plug.Conn.get_req_header("cf-ipcountry")
+      |> List.first()
+
+    cf_city =
+      conn
+      |> Plug.Conn.get_req_header("cf-ipcity")
+      |> List.first()
+
+    cf_region =
+      conn
+      |> Plug.Conn.get_req_header("cf-region-code")
+      |> List.first()
+
+    changeset
+    |> Changeset.put_change(:cf_country, cf_country)
+    |> Changeset.put_change(:cf_city, cf_city)
+    |> Changeset.put_change(:cf_region, cf_region)
   end
 
   defp put_ip_classification(changeset, %Plug.Conn{} = conn) do

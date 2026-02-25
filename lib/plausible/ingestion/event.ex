@@ -23,6 +23,8 @@ defmodule Plausible.Ingestion.Event do
 
   @type drop_reason() ::
           :bot
+          | :bot_agent
+          | :china_ghost
           | :spam_referrer
           | GateKeeper.policy()
           | :invalid
@@ -105,10 +107,12 @@ defmodule Plausible.Ingestion.Event do
   defp pipeline() do
     [
       drop_datacenter_ip: &drop_datacenter_ip/1,
+      drop_bot_agent: &drop_bot_agent/1,
       drop_shield_rule_hostname: &drop_shield_rule_hostname/1,
       drop_shield_rule_page: &drop_shield_rule_page/1,
       drop_shield_rule_ip: &drop_shield_rule_ip/1,
       put_geolocation: &put_geolocation/1,
+      drop_china_ghost_traffic: &drop_china_ghost_traffic/1,
       drop_shield_rule_country: &drop_shield_rule_country/1,
       put_user_agent: &put_user_agent/1,
       put_basic_info: &put_basic_info/1,
@@ -174,6 +178,63 @@ defmodule Plausible.Ingestion.Event do
 
       _any ->
         event
+    end
+  end
+
+  @bot_patterns [
+    # Major search engine crawlers
+    "googlebot", "bingbot", "yandexbot", "baiduspider", "duckduckbot",
+    "slurp", "sogou", "exabot", "ia_archiver", "archive.org_bot",
+    # SEO / marketing tools
+    "ahrefsbot", "semrushbot", "mj12bot", "dotbot", "rogerbot",
+    "screaming frog", "seobilitybot", "sistrix", "blexbot",
+    "linkdexbot", "megaindex", "serpstatbot", "dataforseo",
+    # Social media crawlers
+    "facebookexternalhit", "twitterbot", "linkedinbot", "pinterestbot",
+    "slackbot", "telegrambot", "whatsapp", "discordbot",
+    # Headless browsers & automation
+    "headlesschrome", "phantomjs", "selenium", "puppeteer", "playwright",
+    "cypress", "webdriver", "chromedriver", "geckodriver",
+    # HTTP libraries
+    "python-requests", "python-urllib", "go-http-client", "java/",
+    "apache-httpclient", "okhttp", "node-fetch", "axios/",
+    "libwww-perl", "wget", "curl/", "httpie", "postman",
+    "insomnia", "rest-client", "http_request", "guzzlehttp",
+    "scrapy", "mechanize", "httpclient",
+    # Generic bot / crawler / spider
+    "bot/", "crawler", "spider", "scraper", "fetcher",
+    # Monitoring & uptime
+    "uptimerobot", "pingdom", "site24x7", "statuscake",
+    "newrelicpinger", "datadoghq", "checkly",
+    # Other
+    "petalbot", "bytespider", "applebot", "amazonbot",
+    "gptbot", "chatgpt-user", "claudebot", "anthropic-ai",
+    "cohere-ai", "ccbot", "google-extended"
+  ]
+
+  defp drop_bot_agent(%__MODULE__{} = event) do
+    ua = event.request.user_agent
+
+    if is_binary(ua) and bot_user_agent?(String.downcase(ua)) do
+      drop(event, :bot_agent)
+    else
+      event
+    end
+  end
+
+  defp bot_user_agent?(ua_lower) do
+    Enum.any?(@bot_patterns, fn pattern -> String.contains?(ua_lower, pattern) end)
+  end
+
+  defp drop_china_ghost_traffic(%__MODULE__{} = event) do
+    country = Map.get(event.clickhouse_session_attrs, :country_code)
+    event_name = event.request.event_name
+    referrer = event.request.referrer
+
+    if country == "CN" and event_name == "pageview" and (is_nil(referrer) or referrer == "") do
+      drop(event, :china_ghost)
+    else
+      event
     end
   end
 
@@ -261,10 +322,77 @@ defmodule Plausible.Ingestion.Event do
         update_session_attrs(event, %{country_code: "A1"})
 
       _any ->
-        result = Plausible.Ingestion.Geolocation.lookup(event.request.remote_ip) || %{}
-        update_session_attrs(event, result)
+        cf_country = event.request.cf_country
+
+        if is_binary(cf_country) and cf_country not in ["", "XX", "T1"] do
+          # Use Cloudflare geo headers as authoritative source
+          cf_city_name = event.request.cf_city
+          cf_region_code = event.request.cf_region
+
+          # Try to resolve CF city name to a geoname ID so it works natively
+          # in Plausible's city reports and API
+          city_geoname_id =
+            if is_binary(cf_city_name) and cf_city_name != "" do
+              case Location.get_city(cf_city_name, cf_country) do
+                %{id: id} -> id
+                nil -> nil
+              end
+            end
+
+          subdivision1 = cf_subdivision(cf_country, cf_region_code)
+
+          result = %{
+            country_code: cf_country,
+            subdivision1_code: subdivision1,
+            subdivision2_code: nil,
+            city_geoname_id: city_geoname_id
+          }
+
+          event
+          |> update_session_attrs(result)
+          |> inject_cf_geo_props()
+        else
+          result = Plausible.Ingestion.Geolocation.lookup(event.request.remote_ip) || %{}
+          update_session_attrs(event, result)
+        end
     end
   end
+
+  defp cf_subdivision(country_code, region_code) when is_binary(region_code) and region_code != "" do
+    country_code <> "-" <> region_code
+  end
+
+  defp cf_subdivision(_country_code, _region_code), do: nil
+
+  defp inject_cf_geo_props(%__MODULE__{} = event) do
+    cf_city = event.request.cf_city
+    cf_region = event.request.cf_region
+
+    # Always inject CF city/region as custom props so the raw CF data
+    # is preserved even if the geoname lookup failed
+    cf_props =
+      %{}
+      |> maybe_put("cf_city", cf_city)
+      |> maybe_put("cf_region", cf_region)
+
+    if map_size(cf_props) > 0 do
+      existing_keys = Map.get(event.clickhouse_event_attrs, :"meta.key", [])
+      existing_vals = Map.get(event.clickhouse_event_attrs, :"meta.value", [])
+
+      {new_keys, new_vals} = Enum.unzip(cf_props)
+
+      update_event_attrs(event, %{
+        "meta.key": existing_keys ++ new_keys,
+        "meta.value": existing_vals ++ new_vals
+      })
+    else
+      event
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp drop_shield_rule_country(
          %__MODULE__{domain: domain, clickhouse_session_attrs: %{country_code: cc}} = event

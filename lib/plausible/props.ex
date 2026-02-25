@@ -16,7 +16,7 @@ defmodule Plausible.Props do
   @max_prop_value_length 2000
   def max_prop_value_length, do: @max_prop_value_length
 
-  @internal_keys ~w(url path)
+  @internal_keys ~w(url path cf_city cf_region)
   @doc """
   Lists prop keys used internally.
 
