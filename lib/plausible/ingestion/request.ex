@@ -260,6 +260,7 @@ defmodule Plausible.Ingestion.Request do
         changeset
     end
   end
+  
 
   defp put_cf_geo(changeset, %Plug.Conn{} = conn) do
     cf_country =

@@ -21,7 +21,7 @@ WORKDIR /app
 
 # install build dependencies
 RUN apk add --no-cache git nodejs yarn python3 npm ca-certificates wget gnupg make gcc libc-dev && \
-  npm install npm@latest -g
+  npm install npm@10 -g
 
 COPY mix.exs ./
 COPY mix.lock ./
