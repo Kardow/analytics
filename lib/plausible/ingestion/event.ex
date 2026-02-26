@@ -325,26 +325,25 @@ defmodule Plausible.Ingestion.Event do
         cf_country = event.request.cf_country
 
         if is_binary(cf_country) and cf_country not in ["", "XX", "T1"] do
-          # Use Cloudflare geo headers as authoritative source
-          cf_city_name = event.request.cf_city
-          cf_region_code = event.request.cf_region
+          # Best-effort GeoIP lookup for subdivision/city fallback.
+          # CF gives us a more accurate country code, but GeoIP gives proper
+          # ISO subdivision codes and numeric city geoname IDs.
+          geoip = Plausible.Ingestion.Geolocation.lookup(event.request.remote_ip) || %{}
 
-          # Try to resolve CF city name to a geoname ID so it works natively
-          # in Plausible's city reports and API
+          # Try CF city name (normalising accents: "Montréal" → "Montreal"),
+          # fall back to GeoIP city_geoname_id.
           city_geoname_id =
-            if is_binary(cf_city_name) and cf_city_name != "" do
-              case Location.get_city(cf_city_name, cf_country) do
-                %{id: id} -> id
-                nil -> nil
-              end
-            end
+            cf_city_to_geoname_id(event.request.cf_city, cf_country) ||
+              Map.get(geoip, :city_geoname_id)
 
-          subdivision1 = cf_subdivision(cf_country, cf_region_code)
+          # Prefer GeoIP subdivision code (ISO format e.g. "CA-QC");
+          # cf_region is a full name ("Quebec") which is not an ISO code.
+          subdivision1 = Map.get(geoip, :subdivision1_code)
 
           result = %{
             country_code: cf_country,
             subdivision1_code: subdivision1,
-            subdivision2_code: nil,
+            subdivision2_code: Map.get(geoip, :subdivision2_code),
             city_geoname_id: city_geoname_id
           }
 
@@ -358,11 +357,32 @@ defmodule Plausible.Ingestion.Event do
     end
   end
 
-  defp cf_subdivision(country_code, region_code) when is_binary(region_code) and region_code != "" do
-    country_code <> "-" <> region_code
+  # Strip combining diacritical marks (accents) so that "Montréal" matches
+  # the geonames entry "Montreal".
+  defp strip_accents(str) do
+    str
+    |> :unicode.characters_to_nfd_binary()
+    |> String.replace(~r/\p{M}/u, "")
   end
 
-  defp cf_subdivision(_country_code, _region_code), do: nil
+  defp cf_city_to_geoname_id(nil, _country), do: nil
+  defp cf_city_to_geoname_id("", _country), do: nil
+
+  defp cf_city_to_geoname_id(city_name, country_code) do
+    case Location.get_city(city_name, country_code) do
+      %{id: id} ->
+        id
+
+      nil ->
+        # Retry with accents stripped: "Montréal" → "Montreal"
+        normalized = strip_accents(city_name)
+
+        case Location.get_city(normalized, country_code) do
+          %{id: id} -> id
+          nil -> nil
+        end
+    end
+  end
 
   defp inject_cf_geo_props(%__MODULE__{} = event) do
     cf_city = event.request.cf_city
