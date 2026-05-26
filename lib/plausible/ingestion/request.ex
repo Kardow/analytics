@@ -300,7 +300,7 @@ defmodule Plausible.Ingestion.Request do
 
   defp maybe_log_cf_geo_headers(conn, cf_country, cf_city, cf_region, cf_region_code) do
     if geo_debug_logging?() do
-      Logger.info(
+      Logger.warning(
         "geo_debug request_cf_headers=" <>
           inspect(%{
             request_path: conn.request_path,

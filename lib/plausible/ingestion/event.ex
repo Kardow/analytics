@@ -416,7 +416,7 @@ defmodule Plausible.Ingestion.Event do
 
   defp maybe_log_geolocation_resolution(event, source, result, extra \\ []) do
     if geo_debug_logging?() do
-      Logger.info(
+      Logger.warning(
         "geo_debug geolocation_resolution=" <>
           inspect(%{
             source: source,
