@@ -54,6 +54,7 @@ defmodule Plausible.Ingestion.Request do
     field :cf_country, :string
     field :cf_city, :string
     field :cf_region, :string
+    field :cf_region_code, :string
   end
 
   @type t() :: %__MODULE__{}
@@ -274,20 +275,24 @@ defmodule Plausible.Ingestion.Request do
 
   defp put_cf_geo(changeset, %Plug.Conn{} = conn) do
     # Try native CF headers first, then the x-cf-* forwarding headers set by
-    # the Next.js / Cloudflare Worker middleware on the main app domain.
+    # upstream middleware.
     cf_country = get_req_header_any(conn, ["cf-ipcountry", "x-cf-country"])
 
     # City: try both canonical and forwarded; CF spells it "cf-ipcity"
     cf_city = get_req_header_any(conn, ["cf-ipcity", "x-cf-city"])
 
-    # CF does NOT send cf-region-code. The x-cf-region custom header carries
-    # the region *name* (e.g. "Quebec"). We also try cf-region as a fallback.
-    cf_region = get_req_header_any(conn, ["x-cf-region", "cf-region", "cf-ipregion"])
+    # Region name (for diagnostics / custom dimensions), e.g. "California".
+    cf_region = get_req_header_any(conn, ["cf-region", "x-cf-region", "cf-ipregion"])
+
+    # Region code (ISO 3166-2 suffix), e.g. "CA" for US-CA.
+    cf_region_code =
+      get_req_header_any(conn, ["cf-region-code", "x-cf-region-code", "cf-ipregion-code"])
 
     changeset
     |> Changeset.put_change(:cf_country, cf_country)
     |> Changeset.put_change(:cf_city, cf_city)
     |> Changeset.put_change(:cf_region, cf_region)
+    |> Changeset.put_change(:cf_region_code, cf_region_code)
   end
 
   defp put_ip_classification(changeset, %Plug.Conn{} = conn) do

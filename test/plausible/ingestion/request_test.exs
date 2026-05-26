@@ -149,6 +149,27 @@ defmodule Plausible.Ingestion.RequestTest do
     assert request.user_agent == "Mozilla"
   end
 
+  test "captures cloudflare geo headers" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "http://dummy.site/index.html"
+    }
+
+    conn =
+      build_conn(:post, "/api/events", payload)
+      |> put_req_header("cf-ipcountry", "US")
+      |> put_req_header("cf-ipcity", "San Francisco")
+      |> put_req_header("cf-region", "California")
+      |> put_req_header("cf-region-code", "CA")
+
+    assert {:ok, request} = Request.build(conn)
+    assert request.cf_country == "US"
+    assert request.cf_city == "San Francisco"
+    assert request.cf_region == "California"
+    assert request.cf_region_code == "CA"
+  end
+
   test "request params are set" do
     payload = %{
       name: "pageview",

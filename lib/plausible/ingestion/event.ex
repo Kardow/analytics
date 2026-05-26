@@ -323,6 +323,7 @@ defmodule Plausible.Ingestion.Event do
 
       _any ->
         cf_country = event.request.cf_country
+        cf_region_code = event.request.cf_region_code
 
         if is_binary(cf_country) and cf_country not in ["", "XX", "T1"] do
           # Best-effort GeoIP lookup for subdivision/city fallback.
@@ -337,8 +338,10 @@ defmodule Plausible.Ingestion.Event do
               Map.get(geoip, :city_geoname_id)
 
           # Prefer GeoIP subdivision code (ISO format e.g. "CA-QC");
-          # cf_region is a full name ("Quebec") which is not an ISO code.
-          subdivision1 = Map.get(geoip, :subdivision1_code)
+          # otherwise fall back to CF region code (e.g. "CA" => "US-CA").
+          subdivision1 =
+            Map.get(geoip, :subdivision1_code) ||
+              cf_subdivision1_code(cf_country, cf_region_code)
 
           result = %{
             country_code: cf_country,
@@ -383,6 +386,25 @@ defmodule Plausible.Ingestion.Event do
         end
     end
   end
+
+  defp cf_subdivision1_code(country_code, region_code)
+       when is_binary(country_code) and is_binary(region_code) do
+    country = String.upcase(String.trim(country_code))
+    region = String.upcase(String.trim(region_code))
+
+    cond do
+      country == "" or region == "" ->
+        nil
+
+      String.starts_with?(region, country <> "-") ->
+        region
+
+      true ->
+        country <> "-" <> region
+    end
+  end
+
+  defp cf_subdivision1_code(_, _), do: nil
 
   defp inject_cf_geo_props(%__MODULE__{} = event) do
     cf_city = event.request.cf_city

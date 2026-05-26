@@ -979,6 +979,30 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert session.country_code == "US"
     end
 
+    test "uses cloudflare region code header when GeoIP has no subdivision", %{
+      conn: conn,
+      site: site
+    } do
+      params = %{
+        name: "pageview",
+        domain: site.domain,
+        url: "http://example.com/"
+      }
+
+      conn
+      |> put_req_header("x-forwarded-for", "0.0.0.0")
+      |> put_req_header("cf-ipcountry", "US")
+      |> put_req_header("cf-region-code", "CA")
+      |> post("/api/event", params)
+
+      session = get_created_session(site)
+      event = get_event(site)
+
+      assert session.country_code == "US"
+      assert session.subdivision1_code == "US-CA"
+      assert event.subdivision1_code == session.subdivision1_code
+    end
+
     test "uses BunnyCDN's custom header for client IP address if present", %{
       conn: conn,
       site: site
