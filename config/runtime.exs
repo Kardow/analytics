@@ -274,6 +274,15 @@ log_failed_login_attempts =
   |> get_var_from_path_or_env("LOG_FAILED_LOGIN_ATTEMPTS", "false")
   |> String.to_existing_atom()
 
+geo_debug_logging =
+  config_dir
+  |> get_var_from_path_or_env("GEO_DEBUG_LOGGING", "false")
+  |> String.to_existing_atom()
+
+if geo_debug_logging not in [true, false] do
+  raise "GEO_DEBUG_LOGGING must be one of `true` or `false`."
+end
+
 websocket_url = get_var_from_path_or_env(config_dir, "WEBSOCKET_URL", "")
 
 if byte_size(websocket_url) > 0 and
@@ -300,6 +309,7 @@ config :plausible,
   is_selfhost: is_selfhost,
   custom_script_name: custom_script_name,
   log_failed_login_attempts: log_failed_login_attempts,
+  geo_debug_logging: geo_debug_logging,
   license_key: license_key,
   data_dir: data_dir
 

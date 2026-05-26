@@ -24,6 +24,7 @@ defmodule Plausible.Ingestion.Request do
 
   use Ecto.Schema
   use Plausible
+  require Logger
   alias Ecto.Changeset
 
   @max_url_size 2_000
@@ -288,11 +289,33 @@ defmodule Plausible.Ingestion.Request do
     cf_region_code =
       get_req_header_any(conn, ["cf-region-code", "x-cf-region-code", "cf-ipregion-code"])
 
+    maybe_log_cf_geo_headers(conn, cf_country, cf_city, cf_region, cf_region_code)
+
     changeset
     |> Changeset.put_change(:cf_country, cf_country)
     |> Changeset.put_change(:cf_city, cf_city)
     |> Changeset.put_change(:cf_region, cf_region)
     |> Changeset.put_change(:cf_region_code, cf_region_code)
+  end
+
+  defp maybe_log_cf_geo_headers(conn, cf_country, cf_city, cf_region, cf_region_code) do
+    if geo_debug_logging?() do
+      Logger.info(
+        "geo_debug request_cf_headers=" <>
+          inspect(%{
+            request_path: conn.request_path,
+            remote_ip: PlausibleWeb.RemoteIP.get(conn),
+            cf_country: cf_country,
+            cf_region_code: cf_region_code,
+            cf_region: cf_region,
+            cf_city: cf_city
+          })
+      )
+    end
+  end
+
+  defp geo_debug_logging? do
+    Application.get_env(:plausible, :geo_debug_logging, false)
   end
 
   defp put_ip_classification(changeset, %Plug.Conn{} = conn) do

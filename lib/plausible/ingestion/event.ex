@@ -6,6 +6,7 @@ defmodule Plausible.Ingestion.Event do
   (e.g. due to spam blocklist) from the processing pipeline.
   """
   use Plausible
+  require Logger
   alias Plausible.Ingestion.Request
   alias Plausible.ClickhouseEventV2
   alias Plausible.Site.GateKeeper
@@ -350,11 +351,18 @@ defmodule Plausible.Ingestion.Event do
             city_geoname_id: city_geoname_id
           }
 
+          maybe_log_geolocation_resolution(event, :cloudflare_fallback, result,
+            geoip_subdivision1_code: Map.get(geoip, :subdivision1_code),
+            geoip_city_geoname_id: Map.get(geoip, :city_geoname_id),
+            cf_region_code: cf_region_code
+          )
+
           event
           |> update_session_attrs(result)
           |> inject_cf_geo_props()
         else
           result = Plausible.Ingestion.Geolocation.lookup(event.request.remote_ip) || %{}
+          maybe_log_geolocation_resolution(event, :geoip_only, result)
           update_session_attrs(event, result)
         end
     end
@@ -405,6 +413,30 @@ defmodule Plausible.Ingestion.Event do
   end
 
   defp cf_subdivision1_code(_, _), do: nil
+
+  defp maybe_log_geolocation_resolution(event, source, result, extra \\ []) do
+    if geo_debug_logging?() do
+      Logger.info(
+        "geo_debug geolocation_resolution=" <>
+          inspect(%{
+            source: source,
+            remote_ip: event.request.remote_ip,
+            cf_country: event.request.cf_country,
+            cf_region: event.request.cf_region,
+            cf_city: event.request.cf_city,
+            result_country_code: Map.get(result, :country_code),
+            result_subdivision1_code: Map.get(result, :subdivision1_code),
+            result_subdivision2_code: Map.get(result, :subdivision2_code),
+            result_city_geoname_id: Map.get(result, :city_geoname_id),
+            extra: Map.new(extra)
+          })
+      )
+    end
+  end
+
+  defp geo_debug_logging? do
+    Application.get_env(:plausible, :geo_debug_logging, false)
+  end
 
   defp inject_cf_geo_props(%__MODULE__{} = event) do
     cf_city = event.request.cf_city
