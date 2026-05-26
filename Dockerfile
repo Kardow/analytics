@@ -2,7 +2,7 @@
 # platform specific, it makes sense to build it in the docker
 
 #### Builder
-FROM hexpm/elixir:1.16.0-erlang-26.2.1-alpine-3.18.4 as buildcontainer
+FROM hexpm/elixir:1.16.0-erlang-26.2.1-alpine-3.18.4 AS buildcontainer
 
 ARG MIX_ENV=ce
 
@@ -28,7 +28,7 @@ COPY mix.lock ./
 COPY config ./config
 RUN mix local.hex --force && \
   mix local.rebar --force && \
-  mix deps.get --only prod && \
+  mix deps.get --only $MIX_ENV && \
   mix deps.compile
 
 COPY assets/package.json assets/package-lock.json ./assets/
