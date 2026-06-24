@@ -380,19 +380,33 @@ defmodule Plausible.Ingestion.Event do
   defp cf_city_to_geoname_id("", _country), do: nil
 
   defp cf_city_to_geoname_id(city_name, country_code) do
-    case Location.get_city(city_name, country_code) do
-      %{id: id} ->
-        id
+    city_name
+    |> cf_city_lookup_candidates()
+    |> Enum.find_value(fn candidate ->
+      case Location.get_city(candidate, country_code) do
+        %{id: id} -> id
+        nil -> nil
+      end
+    end)
+  end
 
-      nil ->
-        # Retry with accents stripped: "Montréal" → "Montreal"
-        normalized = strip_accents(city_name)
+  defp cf_city_lookup_candidates(city_name) when is_binary(city_name) do
+    trimmed = String.trim(city_name)
 
-        case Location.get_city(normalized, country_code) do
-          %{id: id} -> id
-          nil -> nil
-        end
-    end
+    first_segment =
+      trimmed
+      |> String.split(",", parts: 2)
+      |> List.first()
+      |> String.trim()
+
+    [
+      trimmed,
+      strip_accents(trimmed),
+      first_segment,
+      strip_accents(first_segment)
+    ]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
   end
 
   defp cf_subdivision1_code(country_code, region_code)

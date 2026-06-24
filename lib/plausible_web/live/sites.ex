@@ -15,6 +15,15 @@ defmodule PlausibleWeb.Live.Sites do
   alias Plausible.Sites
   alias Plausible.Site.Memberships.Invitations
 
+  @overview_periods [
+    {"day", "24h"},
+    {"7d", "7 days"},
+    {"30d", "30 days"},
+    {"12mo", "12 months"},
+    {"all", "All time"}
+  ]
+  @overview_period_keys Enum.map(@overview_periods, &elem(&1, 0))
+
   def mount(params, %{"current_user_id" => user_id}, socket) do
     uri =
       ("/sites?" <> URI.encode_query(Map.take(params, ["filter_text"])))
@@ -24,6 +33,8 @@ defmodule PlausibleWeb.Live.Sites do
       socket
       |> assign(:uri, uri)
       |> assign(:filter_text, params["filter_text"] || "")
+      |> assign(:overview_period, "day")
+      |> assign(:overview_periods, @overview_periods)
       |> assign(:user, Repo.get!(Auth.User, user_id))
 
     {:ok, socket}
@@ -34,6 +45,7 @@ defmodule PlausibleWeb.Live.Sites do
       socket
       |> assign(:params, params)
       |> load_sites()
+      |> load_overview()
       |> assign_new(:has_sites?, fn %{user: user} ->
         Site.Memberships.any_or_pending?(user)
       end)
@@ -87,6 +99,8 @@ defmodule PlausibleWeb.Live.Sites do
       </p>
 
       <div :if={@has_sites?}>
+        <.overview_card stats={@aggregate_stats} period={@overview_period} periods={@overview_periods} />
+
         <ul class="my-6 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           <%= for site <- @sites.entries do %>
             <.site
@@ -297,6 +311,91 @@ defmodule PlausibleWeb.Live.Sites do
     >
       <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a5.927 5.927 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707-.195-.195.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a5.922 5.922 0 0 1 1.013.16l3.134-3.133a2.772 2.772 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146z" />
     </svg>
+    """
+  end
+
+  attr :stats, :any, required: true
+  attr :period, :string, required: true
+  attr :periods, :list, required: true
+
+  def overview_card(assigns) do
+    ~H"""
+    <div class="mt-6 col-span-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <h3 class="text-gray-900 dark:text-gray-100 font-medium text-lg">
+          All Sites Overview
+        </h3>
+        <div class="inline-flex rounded-md shadow-sm" role="group">
+          <button
+            :for={{key, label} <- @periods}
+            type="button"
+            phx-click="set-overview-period"
+            phx-value-period={key}
+            class={[
+              "px-3 py-1 text-xs font-medium border border-gray-200 dark:border-gray-600 first:rounded-l-md last:rounded-r-md -ml-px first:ml-0 focus:outline-none focus:z-10",
+              if(@period == key,
+                do: "bg-indigo-600 text-white border-indigo-600 z-10",
+                else:
+                  "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+              )
+            ]}
+          >
+            <%= label %>
+          </button>
+        </div>
+      </div>
+
+      <div :if={@stats == :loading} class="mt-4 animate-pulse">
+        <div class="h-8 w-40 dark:bg-gray-700 bg-gray-100 rounded-md"></div>
+        <div class="h-[80px] mt-3 dark:bg-gray-700 bg-gray-100 rounded-md"></div>
+      </div>
+
+      <div :if={is_map(@stats)} class="mt-4">
+        <div class="flex items-end justify-between">
+          <p>
+            <span class="text-3xl font-bold text-gray-900 dark:text-gray-100">
+              <%= PlausibleWeb.StatsView.large_number_format(@stats.visitors) %>
+            </span>
+            <span class="text-gray-600 dark:text-gray-400 text-sm ml-1">unique visitors</span>
+          </p>
+          <.percentage_change :if={@period != "all"} change={@stats.change} />
+        </div>
+
+        <div :if={@stats.intervals != []} class="mt-2">
+          <PlausibleWeb.Live.Components.Visitors.chart intervals={@stats.intervals} height={80} />
+        </div>
+
+        <div
+          :if={@stats.top_sites != []}
+          class="mt-3 border-t border-gray-100 dark:border-gray-700 pt-3"
+        >
+          <h4 class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 font-medium mb-2">
+            Top sites
+          </h4>
+          <ul class="space-y-1">
+            <li
+              :for={site <- @stats.top_sites}
+              class="flex items-center justify-between text-sm gap-2"
+            >
+              <.unstyled_link
+                href={"/#{URI.encode_www_form(site.domain)}"}
+                class="flex items-center gap-2 truncate hover:underline dark:text-gray-200"
+              >
+                <img
+                  src={"/favicon/sources/#{site.domain}"}
+                  onerror="this.onerror=null; this.src='/favicon/sources/placeholder';"
+                  class="w-4 h-4 flex-shrink-0"
+                />
+                <span class="truncate text-gray-800 dark:text-gray-200"><%= site.domain %></span>
+              </.unstyled_link>
+              <span class="text-gray-600 dark:text-gray-400 font-medium tabular-nums flex-shrink-0">
+                <%= PlausibleWeb.StatsView.large_number_format(site.visitors) %>
+              </span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
     """
   end
 
@@ -632,6 +731,16 @@ defmodule PlausibleWeb.Live.Sites do
     {:noreply, socket}
   end
 
+  def handle_event("set-overview-period", %{"period" => period}, socket)
+      when period in @overview_period_keys do
+    socket =
+      socket
+      |> assign(:overview_period, period)
+      |> assign_overview()
+
+    {:noreply, socket}
+  end
+
   defp load_sites(%{assigns: assigns} = socket) do
     sites =
       Sites.list_with_invitations(assigns.user, assigns.params,
@@ -656,6 +765,31 @@ defmodule PlausibleWeb.Live.Sites do
       invitations: invitations,
       hourly_stats: hourly_stats
     )
+  end
+
+  # Computes the cross-site overview once the LiveView is connected. It depends
+  # only on the selected period (not on filtering/pagination), so it is computed
+  # once on connect and afterwards only when the period changes.
+  defp load_overview(socket) do
+    cond do
+      not connected?(socket) ->
+        assign_new(socket, :aggregate_stats, fn -> :loading end)
+
+      Map.get(socket.assigns, :aggregate_stats, :loading) == :loading ->
+        assign_overview(socket)
+
+      true ->
+        socket
+    end
+  end
+
+  defp assign_overview(socket) do
+    all_sites = Sites.list_all_for_overview(socket.assigns.user)
+
+    stats =
+      Plausible.Stats.Clickhouse.aggregate_overview(all_sites, socket.assigns.overview_period)
+
+    assign(socket, :aggregate_stats, stats)
   end
 
   defp extract_invitations(sites, user) do

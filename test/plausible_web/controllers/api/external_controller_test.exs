@@ -1003,6 +1003,60 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert event.subdivision1_code == session.subdivision1_code
     end
 
+    test "enriches existing session geolocation when later event has CF region code", %{
+      conn: conn,
+      site: site
+    } do
+      params = %{
+        name: "pageview",
+        domain: site.domain,
+        url: "http://example.com/"
+      }
+
+      # First event starts a session with country only.
+      conn
+      |> put_req_header("x-forwarded-for", "0.0.0.0")
+      |> put_req_header("cf-ipcountry", "US")
+      |> post("/api/event", params)
+
+      # Second event in the same session adds region code.
+      conn
+      |> put_req_header("x-forwarded-for", "0.0.0.0")
+      |> put_req_header("cf-ipcountry", "US")
+      |> put_req_header("cf-region-code", "CA")
+      |> post("/api/event", params)
+
+      session = get_created_session(site)
+      event = get_event(site)
+
+      assert session.country_code == "US"
+      assert session.subdivision1_code == "US-CA"
+      assert event.subdivision1_code == "US-CA"
+    end
+
+    test "resolves CF city when header contains comma-delimited value", %{conn: conn, site: site} do
+      params = %{
+        name: "pageview",
+        domain: site.domain,
+        url: "http://example.com/"
+      }
+
+      expected_city = Location.get_city("Tallinn", "EE")
+      assert expected_city
+
+      conn
+      |> put_req_header("x-forwarded-for", "0.0.0.0")
+      |> put_req_header("cf-ipcountry", "EE")
+      |> put_req_header("cf-ipcity", "Tallinn, Harjumaa")
+      |> post("/api/event", params)
+
+      session = get_created_session(site)
+      event = get_event(site)
+
+      assert session.city_geoname_id == expected_city.id
+      assert event.city_geoname_id == expected_city.id
+    end
+
     test "uses BunnyCDN's custom header for client IP address if present", %{
       conn: conn,
       site: site

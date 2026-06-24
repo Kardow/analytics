@@ -198,6 +198,250 @@ defmodule Plausible.Stats.Clickhouse do
     Map.merge(placeholder, result)
   end
 
+  @overview_periods ~w(day 7d 30d 12mo all)
+
+  @doc """
+  Aggregates visitor stats across a list of sites for the given period into a
+  single overview: a bucketed time series (for the chart), total unique
+  visitors, percentage change vs. the previous period, and the top sites by
+  visitors.
+
+  `period` is one of #{inspect(@overview_periods)}. Returns a map shaped for
+  `PlausibleWeb.Live.Sites.overview_card/1`.
+  """
+  @spec aggregate_overview([map()], String.t(), non_neg_integer(), NaiveDateTime.t()) :: map()
+  def aggregate_overview(sites, period \\ "day", top_n \\ 5, now \\ NaiveDateTime.utc_now())
+
+  def aggregate_overview([], _period, _top_n, _now),
+    do: %{intervals: [], visitors: 0, change: 0, top_sites: [], period: "day"}
+
+  def aggregate_overview(sites, period, top_n, now) when period in @overview_periods do
+    mapping = for site <- sites, do: {site.id, site.domain}, into: %{}
+    site_ids = Map.keys(mapping)
+    now = NaiveDateTime.truncate(now, :second)
+
+    spec = overview_period_spec(period, site_ids, now)
+
+    current_total = range_visitors(site_ids, spec.from, spec.to)
+
+    change =
+      if spec.prev_from do
+        previous_total = range_visitors(site_ids, spec.prev_from, spec.prev_to)
+        Plausible.Stats.Compare.percent_change(previous_total, current_total) || 100
+      else
+        0
+      end
+
+    %{
+      intervals: bucketed_intervals(site_ids, spec),
+      visitors: current_total,
+      change: change,
+      top_sites: top_sites(mapping, spec.from, spec.to, top_n),
+      period: period
+    }
+  end
+
+  def aggregate_overview(sites, _period, top_n, now),
+    do: aggregate_overview(sites, "day", top_n, now)
+
+  # Builds the time-series for the chart by mapping the query result onto a full
+  # list of empty buckets so gaps render as zeroes. The bucketing granularity is
+  # a fixed internal whitelist, so each branch uses a literal SQL fragment.
+  defp bucketed_intervals(site_ids, spec) do
+    result_map =
+      site_ids
+      |> bucketed_query(spec)
+      |> maybe_sample()
+      |> ClickhouseRepo.all()
+      |> Map.new(fn %{interval: interval, visitors: visitors} ->
+        {NaiveDateTime.truncate(interval, :second), visitors}
+      end)
+
+    Enum.map(spec.buckets, fn bucket ->
+      %{interval: bucket, visitors: Map.get(result_map, bucket, 0)}
+    end)
+  end
+
+  defp bucketed_query(site_ids, %{bucket: :hour} = spec) do
+    from(e in "events_v2",
+      where: e.site_id in ^site_ids,
+      where: e.timestamp >= ^spec.from,
+      where: e.timestamp <= ^spec.to,
+      select: %{interval: fragment("toStartOfHour(timestamp)"), visitors: uniq(e.user_id)},
+      group_by: fragment("toStartOfHour(timestamp)"),
+      order_by: fragment("toStartOfHour(timestamp)")
+    )
+  end
+
+  defp bucketed_query(site_ids, %{bucket: :day} = spec) do
+    from(e in "events_v2",
+      where: e.site_id in ^site_ids,
+      where: e.timestamp >= ^spec.from,
+      where: e.timestamp <= ^spec.to,
+      select: %{interval: fragment("toStartOfDay(timestamp)"), visitors: uniq(e.user_id)},
+      group_by: fragment("toStartOfDay(timestamp)"),
+      order_by: fragment("toStartOfDay(timestamp)")
+    )
+  end
+
+  defp bucketed_query(site_ids, %{bucket: :month} = spec) do
+    from(e in "events_v2",
+      where: e.site_id in ^site_ids,
+      where: e.timestamp >= ^spec.from,
+      where: e.timestamp <= ^spec.to,
+      select: %{
+        interval: fragment("toDateTime(toStartOfMonth(timestamp))"),
+        visitors: uniq(e.user_id)
+      },
+      group_by: fragment("toStartOfMonth(timestamp)"),
+      order_by: fragment("toStartOfMonth(timestamp)")
+    )
+  end
+
+  defp top_sites(mapping, from, to, top_n) do
+    query =
+      from(e in "events_v2",
+        where: e.site_id in ^Map.keys(mapping),
+        where: e.timestamp >= ^from,
+        where: e.timestamp <= ^to,
+        select: %{site_id: e.site_id, visitors: uniq(e.user_id)},
+        group_by: e.site_id,
+        order_by: [desc: uniq(e.user_id)],
+        limit: ^top_n
+      )
+
+    query
+    |> maybe_sample()
+    |> ClickhouseRepo.all()
+    |> Enum.map(fn %{site_id: site_id, visitors: visitors} ->
+      %{domain: mapping[site_id], visitors: visitors}
+    end)
+  end
+
+  defp range_visitors(site_ids, from, to) do
+    query =
+      from(e in "events_v2",
+        where: e.site_id in ^site_ids,
+        where: e.timestamp >= ^from,
+        where: e.timestamp <= ^to,
+        select: %{visitors: uniq(e.user_id)}
+      )
+
+    case query |> maybe_sample() |> ClickhouseRepo.all() do
+      [%{visitors: visitors}] -> visitors
+      _ -> 0
+    end
+  end
+
+  defp maybe_sample(query) do
+    on_ee do
+      query = Plausible.Stats.Sampling.add_query_hint(query)
+    end
+
+    query
+  end
+
+  # Each period spec carries the SQL bucketing function, the list of empty
+  # buckets (as NaiveDateTimes matching the SQL output), the current range, and
+  # the previous comparison range (nil disables the change indicator).
+  defp overview_period_spec("day", _site_ids, now) do
+    to = now
+    from = NaiveDateTime.add(now, -24, :hour)
+    first = %{NaiveDateTime.add(now, -23, :hour) | minute: 0, second: 0, microsecond: {0, 0}}
+    buckets = for offset <- 0..23, do: NaiveDateTime.add(first, offset, :hour)
+
+    %{
+      bucket: :hour,
+      buckets: buckets,
+      from: from,
+      to: to,
+      prev_from: NaiveDateTime.add(now, -48, :hour),
+      prev_to: from
+    }
+  end
+
+  defp overview_period_spec("7d", _site_ids, now), do: daily_spec(now, 7)
+  defp overview_period_spec("30d", _site_ids, now), do: daily_spec(now, 30)
+
+  defp overview_period_spec("12mo", _site_ids, now) do
+    last_month = Timex.beginning_of_month(NaiveDateTime.to_date(now))
+    first_month = Timex.shift(last_month, months: -11)
+    monthly_spec(now, first_month, last_month, Timex.shift(first_month, months: -12))
+  end
+
+  defp overview_period_spec("all", site_ids, now) do
+    first_month =
+      case earliest_event(site_ids) do
+        nil -> Timex.beginning_of_month(NaiveDateTime.to_date(now))
+        date -> Timex.beginning_of_month(date)
+      end
+
+    last_month = Timex.beginning_of_month(NaiveDateTime.to_date(now))
+    monthly_spec(now, first_month, last_month, nil)
+  end
+
+  defp daily_spec(now, days) do
+    last_day = NaiveDateTime.to_date(now)
+    first_day = Date.add(last_day, -(days - 1))
+
+    buckets =
+      for offset <- 0..(days - 1) do
+        NaiveDateTime.new!(Date.add(first_day, offset), ~T[00:00:00])
+      end
+
+    from = NaiveDateTime.new!(first_day, ~T[00:00:00])
+
+    %{
+      bucket: :day,
+      buckets: buckets,
+      from: from,
+      to: now,
+      prev_from: NaiveDateTime.add(from, -days, :day),
+      prev_to: from
+    }
+  end
+
+  defp monthly_spec(now, first_month, last_month, prev_from_date) do
+    buckets =
+      Stream.iterate(first_month, &Timex.shift(&1, months: 1))
+      |> Enum.take_while(&(Date.compare(&1, last_month) != :gt))
+      |> Enum.map(&NaiveDateTime.new!(&1, ~T[00:00:00]))
+
+    from = NaiveDateTime.new!(first_month, ~T[00:00:00])
+
+    {prev_from, prev_to} =
+      if prev_from_date do
+        {NaiveDateTime.new!(prev_from_date, ~T[00:00:00]), from}
+      else
+        {nil, nil}
+      end
+
+    %{
+      bucket: :month,
+      buckets: buckets,
+      from: from,
+      to: now,
+      prev_from: prev_from,
+      prev_to: prev_to
+    }
+  end
+
+  defp earliest_event(site_ids) do
+    datetime =
+      ClickhouseRepo.one(
+        from(e in "events_v2",
+          where: e.site_id in ^site_ids,
+          select: fragment("min(?)", e.timestamp)
+        )
+      )
+
+    case datetime do
+      nil -> nil
+      ~N[1970-01-01 00:00:00] -> nil
+      datetime -> NaiveDateTime.to_date(datetime)
+    end
+  end
+
   defp visitors_24h_total(now, offset1, offset2, site_id_to_domain_mapping) do
     query =
       from e in "events_v2",

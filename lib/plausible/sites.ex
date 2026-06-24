@@ -340,6 +340,19 @@ defmodule Plausible.Sites do
     |> Repo.all()
   end
 
+  @doc """
+  Returns `%{id, domain}` for every site the user is a member of, ignoring
+  pagination. Used to build the cross-site overview on the sites index.
+  """
+  def list_all_for_overview(user) do
+    from(s in Site,
+      inner_join: sm in assoc(s, :memberships),
+      on: sm.user_id == ^user.id,
+      select: %{id: s.id, domain: s.domain}
+    )
+    |> Repo.all()
+  end
+
   defp owned_sites_query(user) do
     from(s in Site,
       join: sm in Site.Membership,

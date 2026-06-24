@@ -61,7 +61,33 @@ defmodule Plausible.Session.CacheStore do
           if(event.name == "pageview", do: session.pageviews + 1, else: session.pageviews),
         events: session.events + 1
     }
+    |> maybe_enrich_geolocation(event)
   end
+
+  defp maybe_enrich_geolocation(session, event) do
+    %{session |
+      country_code: first_present_country(session.country_code, event.country_code),
+      subdivision1_code: first_present_text(session.subdivision1_code, event.subdivision1_code),
+      subdivision2_code: first_present_text(session.subdivision2_code, event.subdivision2_code),
+      city_geoname_id: first_present_city_id(session.city_geoname_id, event.city_geoname_id)
+    }
+  end
+
+  defp first_present_country(existing, incoming) do
+    if present_country?(existing), do: existing, else: incoming
+  end
+
+  defp first_present_text(existing, incoming) do
+    if present_text?(existing), do: existing, else: incoming
+  end
+
+  defp first_present_city_id(existing, incoming) do
+    if present_city_id?(existing), do: existing, else: incoming
+  end
+
+  defp present_country?(country), do: country not in [nil, "", <<0, 0>>]
+  defp present_text?(text), do: is_binary(text) and text != ""
+  defp present_city_id?(id), do: is_integer(id) and id > 0
 
   defp new_session_from_event(event, session_attributes) do
     %Plausible.ClickhouseSessionV2{
