@@ -158,6 +158,41 @@ defmodule Plausible.Ingestion.EventTest do
     assert dropped.drop_reason == :site_country_blocklist
   end
 
+  test "event pipeline drops china ghost traffic (CN pageview with no referrer)" do
+    site = insert(:site)
+
+    payload = %{
+      name: "pageview",
+      url: "http://dummy.site",
+      domain: site.domain
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    conn = Plug.Conn.put_req_header(conn, "cf-ipcountry", "CN")
+
+    assert {:ok, request} = Request.build(conn)
+
+    assert {:ok, %{buffered: [], dropped: [dropped]}} = Event.build_and_buffer(request)
+    assert dropped.drop_reason == :china_ghost
+  end
+
+  test "event pipeline keeps china traffic for allowlisted domain (open-launch.com)" do
+    site = insert(:site, domain: "open-launch.com")
+
+    payload = %{
+      name: "pageview",
+      url: "http://open-launch.com",
+      domain: site.domain
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    conn = Plug.Conn.put_req_header(conn, "cf-ipcountry", "CN")
+
+    assert {:ok, request} = Request.build(conn)
+
+    assert {:ok, %{buffered: [_], dropped: []}} = Event.build_and_buffer(request)
+  end
+
   test "event pipeline drops a request when page is on blocklist" do
     site = insert(:site)
 

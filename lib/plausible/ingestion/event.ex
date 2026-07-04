@@ -227,12 +227,19 @@ defmodule Plausible.Ingestion.Event do
     Enum.any?(@bot_patterns, fn pattern -> String.contains?(ua_lower, pattern) end)
   end
 
+  # Domains exempted from the China ghost-traffic filter. These sites receive
+  # legitimate Chinese traffic that must keep being saved. Domains here are in
+  # sanitized form (no "www." prefix), matching event.domain.
+  @china_ghost_allowed_domains ["open-launch.com"]
+
   defp drop_china_ghost_traffic(%__MODULE__{} = event) do
     country = Map.get(event.clickhouse_session_attrs, :country_code)
     event_name = event.request.event_name
     referrer = event.request.referrer
 
-    if country == "CN" and event_name == "pageview" and (is_nil(referrer) or referrer == "") do
+    if event.domain not in @china_ghost_allowed_domains and
+         country == "CN" and event_name == "pageview" and
+         (is_nil(referrer) or referrer == "") do
       drop(event, :china_ghost)
     else
       event
